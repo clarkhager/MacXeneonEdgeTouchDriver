@@ -25,6 +25,24 @@ public final class MacXeneonEdgeTouchDriverApplication {
         schedulingQueue: gestureQueue
     )
 
+    /// Owns the Edge coordinate mapping and keeps it re-resolved across display
+    /// arrangement changes. Every call runs on `gestureQueue` (the one serial
+    /// domain shared with HID touch handling and gesture-state transitions).
+    private lazy var displayCoordinator = DisplayMappingCoordinator(
+        resolver: displayResolver,
+        queue: gestureQueue,
+        setMapper: { [weak self] mapper in
+            self?.mapperStore.currentMapper = mapper
+        },
+        isControllerIdle: { [weak self] in
+            self?.gestureController.state == .idle
+        },
+        cancelActiveInput: { [weak self] in
+            self?.cancelStuckGestureTimer()
+            self?.gestureController.forceCancel()
+        }
+    )
+
     private lazy var hidMonitor = HIDDeviceMonitor(
         eventQueue: gestureQueue,
         seizeDevice: true,
@@ -41,6 +59,7 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
     private var stuckGestureTimer: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
+    private var manualRefreshSource: DispatchSourceSignal?
     private var didRegisterDisplayCallback = false
     private var isRunning = false
 
@@ -84,6 +103,7 @@ public final class MacXeneonEdgeTouchDriverApplication {
         DriverLoggers.log(.notice, category: .lifecycle, "Starting Mac Xeneon Edge Touch Driver in single-touch mode.")
         gestureController.onBecameIdle = { [weak self] in
             self?.cancelStuckGestureTimer()
+            self?.displayCoordinator.commitOnIdle()
         }
 
         guard verifySyntheticEventPermission() else {
@@ -91,9 +111,13 @@ public final class MacXeneonEdgeTouchDriverApplication {
             return EXIT_FAILURE
         }
 
-        refreshDisplayMapping(reason: "startup")
+        // Startup resolve + start the periodic re-resolve safety net, on the queue.
+        gestureQueue.sync {
+            displayCoordinator.start()
+        }
         registerDisplayReconfigurationCallback()
         installSignalHandlers()
+        installManualRefreshHandler()
 
         do {
             try hidMonitor.start()
@@ -115,10 +139,16 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
         hidMonitor.stop()
         gestureQueue.sync {
+            // Shut the coordinator down FIRST: sets isStopping, cancels the poll
+            // timer, and clears any pending mapping BEFORE forceCancel() (which
+            // synchronously fires onBecameIdle) so no mapping commits during teardown.
+            displayCoordinator.shutdown()
             cancelStuckGestureTimer()
             gestureController.forceCancel()
         }
         unregisterDisplayReconfigurationCallback()
+        manualRefreshSource?.cancel()
+        manualRefreshSource = nil
         signalSources.removeAll()
         isRunning = false
 
@@ -128,32 +158,13 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
     fileprivate func handleDisplayReconfiguration() {
         gestureQueue.async { [weak self] in
-            self?.refreshDisplayMapping(reason: "display reconfiguration")
-        }
-    }
-
-    private func refreshDisplayMapping(reason: String) {
-        displayResolver.refresh()
-        mapperStore.currentMapper = displayResolver.currentMapper
-
-        if let bounds = displayResolver.currentBounds {
-            DriverLoggers.log(
-                .notice,
-                category: .display,
-                "Resolved Xeneon Edge display after \(reason): x=\(bounds.origin.x), y=\(bounds.origin.y), width=\(bounds.width), height=\(bounds.height)."
-            )
-        } else {
-            DriverLoggers.log(.error, category: .display, "Could not resolve Xeneon Edge display after \(reason). Touch events will be dropped.")
-            gestureQueue.async { [weak self] in
-                self?.cancelStuckGestureTimer()
-                self?.gestureController.forceCancel()
-            }
+            self?.displayCoordinator.reconcile(reason: "display reconfiguration")
         }
     }
 
     func handleTouchEvent(_ event: TouchEvent) {
         if mapperStore.currentMapper == nil {
-            refreshDisplayMapping(reason: "touch event without display mapper")
+            displayCoordinator.reconcile(reason: "touch without mapper")
         }
 
         gestureController.handle(event)
@@ -168,7 +179,7 @@ public final class MacXeneonEdgeTouchDriverApplication {
     }
 
     func handleDeviceMatched() {
-        refreshDisplayMapping(reason: "HID device match")
+        displayCoordinator.reconcile(reason: "HID device match")
     }
 
     private func handleDeviceRemoval() {
@@ -237,6 +248,24 @@ public final class MacXeneonEdgeTouchDriverApplication {
             source.resume()
             return source
         }
+    }
+
+    /// SIGUSR1 = manual "refresh touch mapping". A SEPARATE retained source (NOT
+    /// in the SIGINT/SIGTERM stop array); SIG_IGN installed before resume so the
+    /// default terminate action never fires. The refresh runs on the gesture queue.
+    private func installManualRefreshHandler() {
+        ignoreDefaultSignalAction(SIGUSR1)
+
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            DriverLoggers.log(.notice, category: .display, "Received SIGUSR1; refreshing touch mapping.")
+            self.gestureQueue.async {
+                self.displayCoordinator.manualRefresh()
+            }
+        }
+        source.resume()
+        manualRefreshSource = source
     }
 
     private func verifySyntheticEventPermission() -> Bool {

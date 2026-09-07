@@ -1,6 +1,20 @@
 import CoreGraphics
 import Foundation
 
+/// Result of enumerating the active display list.
+///
+/// The distinction matters: a `CGGetActiveDisplayList` error and a genuine
+/// empty list are both otherwise reported as `[]`, which the mapping coordinator
+/// must NOT treat the same — a transient enumeration failure must never tear
+/// down a working coordinate frame, whereas a successful empty (or Edge-absent)
+/// list is a real display loss.
+public enum DisplayEnumeration: Equatable {
+    /// The active display list was read successfully (may be empty).
+    case ok([DisplaySnapshot])
+    /// `CGGetActiveDisplayList` reported an error; the list is unknown.
+    case failed
+}
+
 /// Snapshot of a connected display needed for Xeneon matching.
 public struct DisplaySnapshot: Equatable {
     /// CoreGraphics display identifier.
@@ -44,52 +58,43 @@ public struct DisplaySnapshot: Equatable {
     }
 }
 
-/// Resolves and tracks the Xeneon Edge display by EDID and physical size.
+/// Resolves the Xeneon Edge display by EDID and physical size.
+///
+/// This type is now stateless: it enumerates the active displays and matches
+/// the Edge. All tracking of "what is currently applied" lives in
+/// `DisplayMappingCoordinator`, which owns the single serial domain.
 public final class DisplayResolver {
-    /// Callback fired after `refresh()` changes the resolved display.
-    public var onDisplayChanged: ((CGRect?) -> Void)?
-
-    /// Current Xeneon display bounds, if resolved.
-    public private(set) var currentBounds: CGRect?
-
-    /// Current coordinate mapper for the Xeneon display, if resolved.
-    public private(set) var currentMapper: CoordinateMapper?
-
     private let configuration: DriverConfiguration.Display
-    private let activeDisplayProvider: () -> [DisplaySnapshot]
-    private var currentDisplayID: CGDirectDisplayID?
+    private let activeDisplayProvider: () -> DisplayEnumeration
 
     /// Creates a display resolver using the effective configuration.
     public convenience init(configuration: DriverConfiguration.Display = DriverConfiguration.defaults.display) {
-        self.init(configuration: configuration, activeDisplayProvider: Self.activeDisplaySnapshots)
+        self.init(configuration: configuration, activeDisplayProvider: Self.enumerateActiveDisplays)
     }
 
     init(
         configuration: DriverConfiguration.Display = DriverConfiguration.defaults.display,
-        activeDisplayProvider: @escaping () -> [DisplaySnapshot]
+        activeDisplayProvider: @escaping () -> DisplayEnumeration
     ) {
         self.configuration = configuration
         self.activeDisplayProvider = activeDisplayProvider
     }
 
-    /// Re-resolves the Xeneon display from the active display list.
-    public func refresh() {
-        let previousBounds = currentBounds
-        let previousDisplayID = currentDisplayID
-        let match = resolve()
-
-        currentDisplayID = match?.displayID
-        currentBounds = match?.bounds
-        currentMapper = match.map { CoordinateMapper(displayBounds: $0.bounds) }
-
-        if currentBounds != previousBounds || currentDisplayID != previousDisplayID {
-            onDisplayChanged?(currentBounds)
-        }
+    /// Enumerates the active display list (or reports failure).
+    public func enumerate() -> DisplayEnumeration {
+        activeDisplayProvider()
     }
 
-    /// Returns the best current Xeneon display match.
+    /// Convenience: enumerate and match in one call. Returns `nil` on either an
+    /// enumeration failure or the Edge being absent (callers that must tell the
+    /// two apart should use `enumerate()` + `resolve(from:)`).
     public func resolve() -> DisplaySnapshot? {
-        resolve(from: activeDisplayProvider())
+        switch enumerate() {
+        case .failed:
+            return nil
+        case .ok(let displays):
+            return resolve(from: displays)
+        }
     }
 
     /// Returns the best Xeneon display match from supplied snapshots.
@@ -114,22 +119,22 @@ public final class DisplayResolver {
         return sizeMatches.first ?? serialMatches.first ?? vendorModelMatches.first
     }
 
-    private static func activeDisplaySnapshots() -> [DisplaySnapshot] {
+    private static func enumerateActiveDisplays() -> DisplayEnumeration {
         var displayCount: UInt32 = 0
         let countResult = CGGetActiveDisplayList(0, nil, &displayCount)
         guard countResult == .success else {
             DriverLoggers.log(.error, category: .display, "CGGetActiveDisplayList count failed: \(countResult.rawValue)")
-            return []
+            return .failed
         }
 
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
         let listResult = CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount)
         guard listResult == .success else {
             DriverLoggers.log(.error, category: .display, "CGGetActiveDisplayList values failed: \(listResult.rawValue)")
-            return []
+            return .failed
         }
 
-        return displayIDs.prefix(Int(displayCount)).map(makeSnapshot)
+        return .ok(displayIDs.prefix(Int(displayCount)).map(makeSnapshot))
     }
 
     private static func makeSnapshot(displayID: CGDirectDisplayID) -> DisplaySnapshot {

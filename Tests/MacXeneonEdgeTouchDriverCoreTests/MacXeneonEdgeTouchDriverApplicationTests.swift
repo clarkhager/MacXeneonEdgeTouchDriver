@@ -5,7 +5,7 @@ import XCTest
 final class MacXeneonEdgeTouchDriverApplicationTests: XCTestCase {
     func testDeviceMatchRefreshesDisplayMapper() {
         var displays = [xeneonDisplay()]
-        let resolver = DisplayResolver(activeDisplayProvider: { displays })
+        let resolver = DisplayResolver(activeDisplayProvider: { .ok(displays) })
         let input = ApplicationRecordingInputSink()
         let cursor = ApplicationRecordingCursorController()
         let application = MacXeneonEdgeTouchDriverApplication(
@@ -27,7 +27,7 @@ final class MacXeneonEdgeTouchDriverApplicationTests: XCTestCase {
 
     func testTouchEventRefreshesMissingDisplayMapperBeforeDropping() {
         let displays = [xeneonDisplay()]
-        let resolver = DisplayResolver(activeDisplayProvider: { displays })
+        let resolver = DisplayResolver(activeDisplayProvider: { .ok(displays) })
         let input = ApplicationRecordingInputSink()
         let cursor = ApplicationRecordingCursorController()
         let application = MacXeneonEdgeTouchDriverApplication(
