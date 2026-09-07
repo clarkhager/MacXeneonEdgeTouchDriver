@@ -102,5 +102,5 @@ All fields are optional. Missing or malformed config falls back to defaults and 
 
 - If the driver exits immediately, check Accessibility permission for the exact binary location as provided by the install script.
 - If HID open fails, check Input Monitoring permission and confirm no other process has seized the same VID/PID device.
-- If taps land on the wrong display, run `swift run DisplayInfo` and adjust the optional display config override.
+- If taps land on the wrong display after you change a display's resolution/arrangement, the driver re-resolves the Edge origin automatically within ~2 seconds (a periodic re-resolve; any in-flight touch finishes on the old mapping first). To force it immediately without restarting the driver, run `./Scripts/refresh-touch-mapping.sh` (sends `SIGUSR1`). Only if taps land on the wrong display *while the arrangement is stable* do you need `swift run DisplayInfo` and a display config override.
 - For HID investigation, use `swift run HIDDump`; it intentionally runs in non-seize mode and is separate from the production daemon.

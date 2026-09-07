@@ -123,14 +123,17 @@ public final class DisplayResolver {
         var displayCount: UInt32 = 0
         let countResult = CGGetActiveDisplayList(0, nil, &displayCount)
         guard countResult == .success else {
-            DriverLoggers.log(.error, category: .display, "CGGetActiveDisplayList count failed: \(countResult.rawValue)")
+            // Debug level: an automatic poll every ~2s must not spam the log on a
+            // transient enumeration failure. The coordinator leaves the mapping
+            // untouched on `.failed`.
+            DriverLoggers.log(.debug, category: .display, "CGGetActiveDisplayList count failed: \(countResult.rawValue)")
             return .failed
         }
 
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
         let listResult = CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount)
         guard listResult == .success else {
-            DriverLoggers.log(.error, category: .display, "CGGetActiveDisplayList values failed: \(listResult.rawValue)")
+            DriverLoggers.log(.debug, category: .display, "CGGetActiveDisplayList values failed: \(listResult.rawValue)")
             return .failed
         }
 

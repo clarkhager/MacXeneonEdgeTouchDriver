@@ -146,6 +146,45 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
         XCTAssertEqual(appliedYs, [1_080]) // nothing after shutdown
     }
 
+    /// Proves the ordering that prevents a double commit: on manual refresh, a
+    /// `cancelActiveInput()` that synchronously fires `commitOnIdle` (exactly what
+    /// production's `forceCancel()` -> `onBecameIdle` does) must NOT commit the
+    /// old pending, because manual clears `pending` BEFORE cancelling. If the
+    /// clear moved below the cancel, this test would see a duplicate.
+    func testManualRefreshDoesNotDoubleCommitWhenCancelFiresIdleHook() {
+        var applied: [CGFloat?] = []
+        var currentEnum: DisplayEnumeration = .ok([edge(y: 1_080)])
+        var gestureIdle = true
+        var coordinatorRef: DisplayMappingCoordinator!
+        let resolver = DisplayResolver(activeDisplayProvider: { currentEnum })
+        let coordinator = DisplayMappingCoordinator(
+            resolver: resolver,
+            queue: DispatchQueue(label: "test.synccancel"),
+            setMapper: { applied.append($0?.displayBounds.origin.y) },
+            isControllerIdle: { gestureIdle },
+            cancelActiveInput: { coordinatorRef.commitOnIdle() } // forceCancel -> onBecameIdle
+        )
+        coordinatorRef = coordinator
+
+        coordinator.reconcile(reason: "startup") // idle: apply A
+        gestureIdle = false
+        currentEnum = .ok([edge(y: 1_692)])
+        coordinator.reconcile(reason: "poll")    // pending B (deferred)
+        coordinator.manualRefresh()              // clears pending, cancels (idle hook no-ops), commits once
+        XCTAssertEqual(applied, [1_080, 1_692])  // exactly one B, not two
+    }
+
+    func testManualRefreshWhileAbsentDoesNotRepeatLoss() {
+        let c = makeCoordinator()
+        enumeration = .ok([edge(y: 1_080)]); idle = true; c.reconcile(reason: "startup")
+        enumeration = .ok([]); c.reconcile(reason: "poll") // loss
+        XCTAssertEqual(appliedYs, [1_080, nil])
+        XCTAssertEqual(cancelCount, 1)
+        c.manualRefresh()                                  // still absent: already current
+        XCTAssertEqual(appliedYs, [1_080, nil])            // no repeat clear
+        XCTAssertEqual(cancelCount, 1)                     // no repeat cancel
+    }
+
     /// Integration: a real GestureController proves in-flight touch events use the
     /// PRE-change mapper and the swap takes effect only after the gesture ends,
     /// asserted on the actual emitted mouse coordinates. (raw 0 maps to the
@@ -170,7 +209,7 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
             isControllerIdle: { controller.state == .idle },
             cancelActiveInput: { controller.forceCancel() }
         )
-        controller.onBecameIdle = { coordinator.commitOnIdle() }
+        controller.onBecameIdle = { [weak coordinator] in coordinator?.commitOnIdle() }
 
         coordinator.reconcile(reason: "startup") // apply A @ y=200
 

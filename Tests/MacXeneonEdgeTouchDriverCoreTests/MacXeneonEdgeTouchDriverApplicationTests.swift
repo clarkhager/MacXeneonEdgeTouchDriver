@@ -44,6 +44,45 @@ final class MacXeneonEdgeTouchDriverApplicationTests: XCTestCase {
         XCTAssertEqual(input.calls, [.mouseDown(CGPoint(x: 100, y: 200)), .mouseUp(CGPoint(x: 100, y: 200))])
     }
 
+    /// Exercises the REAL production idle wiring (`installDisplayIdleHook`, the
+    /// exact hook `run()` installs) without `run()`'s permission/HID/run-loop side
+    /// effects: a display change mid-gesture is deferred and only swaps the mapper
+    /// after the gesture ends. If the hook regresses (e.g. loses its
+    /// `commitOnIdle`), the second gesture would emit at the stale origin and this
+    /// fails.
+    func testIdleHookDefersMapperSwapUntilGestureEnds() {
+        var displays = [xeneonDisplay(y: 200)]
+        let resolver = DisplayResolver(activeDisplayProvider: { .ok(displays) })
+        let input = ApplicationRecordingInputSink()
+        let cursor = ApplicationRecordingCursorController()
+        let application = MacXeneonEdgeTouchDriverApplication(
+            configuration: immediateConfiguration(),
+            displayResolver: resolver,
+            inputSink: input,
+            cursorController: cursor
+        )
+        application.installDisplayIdleHook()
+
+        application.handleDeviceMatched() // apply A @ y=200
+
+        // Gesture 1 on A; display moves mid-gesture -> must defer.
+        application.handleTouchEvent(touchEvent(.down, rawX: 0, rawY: 0))
+        displays = [xeneonDisplay(y: 800)]
+        application.handleDeviceMatched()  // reconcile mid-gesture -> deferred
+        application.handleTouchEvent(touchEvent(.up, rawX: 0, rawY: 0)) // ends -> real idle hook commits B
+
+        // Gesture 2 on B.
+        application.handleTouchEvent(touchEvent(.down, rawX: 0, rawY: 0))
+        application.handleTouchEvent(touchEvent(.up, rawX: 0, rawY: 0))
+
+        XCTAssertEqual(input.calls, [
+            .mouseDown(CGPoint(x: 100, y: 200)),
+            .mouseUp(CGPoint(x: 100, y: 200)),
+            .mouseDown(CGPoint(x: 100, y: 800)),
+            .mouseUp(CGPoint(x: 100, y: 800))
+        ])
+    }
+
     private func immediateConfiguration() -> DriverConfiguration {
         var configuration = DriverConfiguration.defaults
         configuration.timing.warpToClickDelayMs = 0
@@ -54,13 +93,13 @@ final class MacXeneonEdgeTouchDriverApplicationTests: XCTestCase {
         return configuration
     }
 
-    private func xeneonDisplay() -> DisplaySnapshot {
+    private func xeneonDisplay(y: CGFloat = 200) -> DisplaySnapshot {
         DisplaySnapshot(
             displayID: 42,
             vendorNumber: CapturedXeneonDisplay.vendorNumber,
             modelNumber: CapturedXeneonDisplay.modelNumber,
             serialNumber: CapturedXeneonDisplay.observedSerialNumber,
-            bounds: CGRect(x: 100, y: 200, width: 2_560, height: 720),
+            bounds: CGRect(x: 100, y: y, width: 2_560, height: 720),
             pixelsWide: CapturedXeneonDisplay.expectedWidth,
             pixelsHigh: CapturedXeneonDisplay.expectedHeight
         )

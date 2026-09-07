@@ -101,10 +101,7 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
         isRunning = true
         DriverLoggers.log(.notice, category: .lifecycle, "Starting Mac Xeneon Edge Touch Driver in single-touch mode.")
-        gestureController.onBecameIdle = { [weak self] in
-            self?.cancelStuckGestureTimer()
-            self?.displayCoordinator.commitOnIdle()
-        }
+        installDisplayIdleHook()
 
         guard verifySyntheticEventPermission() else {
             stop()
@@ -182,6 +179,17 @@ public final class MacXeneonEdgeTouchDriverApplication {
         displayCoordinator.reconcile(reason: "HID device match")
     }
 
+    /// Wires the gesture controller's idle hook to the display coordinator's
+    /// pending-commit. Called by `run()`; exposed (not `private`) so tests can
+    /// exercise this exact production wiring — not a duplicate — without `run()`'s
+    /// permission/HID/run-loop side effects.
+    func installDisplayIdleHook() {
+        gestureController.onBecameIdle = { [weak self] in
+            self?.cancelStuckGestureTimer()
+            self?.displayCoordinator.commitOnIdle()
+        }
+    }
+
     private func handleDeviceRemoval() {
         cancelStuckGestureTimer()
         gestureController.forceCancel()
@@ -254,7 +262,15 @@ public final class MacXeneonEdgeTouchDriverApplication {
     /// in the SIGINT/SIGTERM stop array); SIG_IGN installed before resume so the
     /// default terminate action never fires. The refresh runs on the gesture queue.
     private func installManualRefreshHandler() {
-        ignoreDefaultSignalAction(SIGUSR1)
+        // A dispatch signal source does NOT change the signal disposition, and
+        // SIGUSR1 defaults to terminating the process. If we cannot install
+        // SIG_IGN, do not install the source — otherwise a manual refresh could
+        // kill the driver. The periodic re-resolve keeps the mapping correct
+        // regardless.
+        guard ignoreDefaultSignalAction(SIGUSR1) else {
+            DriverLoggers.log(.error, category: .display, "Could not ignore SIGUSR1; manual refresh trigger disabled (periodic re-resolve still active).")
+            return
+        }
 
         let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         source.setEventHandler { [weak self] in
@@ -305,7 +321,8 @@ public final class MacXeneonEdgeTouchDriverApplication {
         DriverLoggers.log(.error, category: .lifecycle, "Permission identity: executable=\(executablePath), launcher=\(launcherPath).")
     }
 
-    private func ignoreDefaultSignalAction(_ signalNumber: Int32) {
+    @discardableResult
+    private func ignoreDefaultSignalAction(_ signalNumber: Int32) -> Bool {
         var action = sigaction()
         action.__sigaction_u.__sa_handler = SIG_IGN
         action.sa_flags = 0
@@ -313,7 +330,9 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
         if sigaction(signalNumber, &action, nil) != 0 {
             DriverLoggers.log(.error, category: .lifecycle, "sigaction failed for signal \(signalNumber).")
+            return false
         }
+        return true
     }
 }
 

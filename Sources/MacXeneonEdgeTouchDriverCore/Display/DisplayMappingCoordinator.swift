@@ -101,6 +101,7 @@ public final class DisplayMappingCoordinator {
     /// gesture, and commits once. Call on `queue`.
     public func manualRefresh() {
         guard !isStopping else { return }
+        log("resolve requested (manual SIGUSR1)")
         guard let observation = observe() else {
             log("manual refresh: enumeration failed, mapping untouched")
             return
@@ -154,6 +155,11 @@ public final class DisplayMappingCoordinator {
 
         switch observation {
         case .absent:
+            if applied == .absent {
+                // Already lost; don't re-cancel or re-log (esp. on a manual poke).
+                if manual { log("manual refresh: already current (absent)") }
+                return
+            }
             handleLoss()
 
         case .present(let bounds, _):
