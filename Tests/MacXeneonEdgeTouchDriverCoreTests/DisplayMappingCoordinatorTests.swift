@@ -234,6 +234,61 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
         XCTAssertEqual(appliedYs, [1_080, nil])
     }
 
+    /// Ordering regression guard for `handleLoss`: `cancelActiveInput` here
+    /// synchronously fires `commitOnIdle` (exactly production's
+    /// `forceCancel()` -> `onBecameIdle`). If loss cleared `pending` AFTER the
+    /// cancel, the obsolete B would be re-applied over the just-cleared mapper.
+    func testLossClearsPendingBeforeSynchronousCancel() {
+        var applied: [CGFloat?] = []
+        let enumA: DisplayEnumeration = .ok([edge(y: 1_080)])
+        let enumB: DisplayEnumeration = .ok([edge(y: 1_692)])
+        let enumLost: DisplayEnumeration = .ok([])
+        var currentEnum = enumA
+        var gestureIdle = true
+        weak var coordinatorRef: DisplayMappingCoordinator?
+        let resolver = DisplayResolver(activeDisplayProvider: { currentEnum })
+        let coordinator = DisplayMappingCoordinator(
+            resolver: resolver,
+            queue: DispatchQueue(label: "test.lossorder"),
+            setMapper: { applied.append($0?.displayBounds.origin.y) },
+            isControllerIdle: { gestureIdle },
+            cancelActiveInput: { coordinatorRef?.commitOnIdle() }
+        )
+        coordinatorRef = coordinator
+        coordinator.reconcile(reason: "startup")                    // apply A
+        gestureIdle = false
+        currentEnum = enumB; coordinator.reconcile(reason: "poll")  // pending B
+        currentEnum = enumLost; coordinator.reconcile(reason: "poll") // loss
+        XCTAssertEqual(applied, [1_080, nil]) // A then cleared; NO reinstated B
+    }
+
+    /// Shutdown regression guard: after `shutdown()`, a synchronous
+    /// `forceCancel()` -> `onBecameIdle` -> `commitOnIdle` during teardown must
+    /// not commit a mapping (isStopping guard + pending cleared).
+    func testShutdownWithPendingDoesNotCommitOnSynchronousCancel() {
+        var applied: [CGFloat?] = []
+        let enumA: DisplayEnumeration = .ok([edge(y: 1_080)])
+        let enumB: DisplayEnumeration = .ok([edge(y: 1_692)])
+        var currentEnum = enumA
+        var gestureIdle = true
+        weak var coordinatorRef: DisplayMappingCoordinator?
+        let resolver = DisplayResolver(activeDisplayProvider: { currentEnum })
+        let coordinator = DisplayMappingCoordinator(
+            resolver: resolver,
+            queue: DispatchQueue(label: "test.shutdownsync"),
+            setMapper: { applied.append($0?.displayBounds.origin.y) },
+            isControllerIdle: { gestureIdle },
+            cancelActiveInput: { coordinatorRef?.commitOnIdle() }
+        )
+        coordinatorRef = coordinator
+        coordinator.reconcile(reason: "startup")                    // apply A
+        gestureIdle = false
+        currentEnum = enumB; coordinator.reconcile(reason: "poll")  // pending B
+        coordinator.shutdown()                                      // isStopping + clears pending + cancels timer
+        coordinator.commitOnIdle()                                  // teardown forceCancel -> onBecameIdle -> commitOnIdle
+        XCTAssertEqual(applied, [1_080]) // only A; teardown committed nothing
+    }
+
     /// Integration: a real GestureController proves in-flight touch events use the
     /// PRE-change mapper and the swap takes effect only after the gesture ends,
     /// asserted on the actual emitted mouse coordinates. (raw 0 maps to the
