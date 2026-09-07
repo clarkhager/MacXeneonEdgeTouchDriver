@@ -152,6 +152,12 @@ public final class DisplayMappingCoordinator {
             return
         }
         lastObserved = observation
+        // Manual already logged its own request phase (fires even when already
+        // current); automatic transitions log it here, only past churn suppression
+        // so a stable arrangement stays silent.
+        if !manual {
+            log("resolve requested (\(reason))")
+        }
 
         switch observation {
         case .absent:

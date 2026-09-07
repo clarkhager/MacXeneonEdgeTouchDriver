@@ -155,14 +155,14 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
         var applied: [CGFloat?] = []
         var currentEnum: DisplayEnumeration = .ok([edge(y: 1_080)])
         var gestureIdle = true
-        var coordinatorRef: DisplayMappingCoordinator!
+        weak var coordinatorRef: DisplayMappingCoordinator?
         let resolver = DisplayResolver(activeDisplayProvider: { currentEnum })
         let coordinator = DisplayMappingCoordinator(
             resolver: resolver,
             queue: DispatchQueue(label: "test.synccancel"),
             setMapper: { applied.append($0?.displayBounds.origin.y) },
             isControllerIdle: { gestureIdle },
-            cancelActiveInput: { coordinatorRef.commitOnIdle() } // forceCancel -> onBecameIdle
+            cancelActiveInput: { coordinatorRef?.commitOnIdle() } // forceCancel -> onBecameIdle
         )
         coordinatorRef = coordinator
 
@@ -183,6 +183,55 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
         c.manualRefresh()                                  // still absent: already current
         XCTAssertEqual(appliedYs, [1_080, nil])            // no repeat clear
         XCTAssertEqual(cancelCount, 1)                     // no repeat cancel
+    }
+
+    /// Exercises the REAL poll path: `start()` runs the startup resolve and the
+    /// `DispatchSourceTimer`, and a provider-only change (no explicit reconcile
+    /// call) is picked up by a timer tick. If timer setup were deleted this fails.
+    func testPollTimerAppliesAProviderOnlyChange() {
+        let queue = DispatchQueue(label: "test.polltimer")
+        let enumA: DisplayEnumeration = .ok([edge(y: 1_080)])
+        let enumB: DisplayEnumeration = .ok([edge(y: 1_692)])
+        var currentEnum = enumA
+        let resolver = DisplayResolver(activeDisplayProvider: { currentEnum })
+        var recorded: [CGFloat?] = [] // only touched on `queue`
+        let exp = expectation(description: "poll applies the moved origin")
+        let coordinator = DisplayMappingCoordinator(
+            resolver: resolver,
+            queue: queue,
+            setMapper: { mapper in
+                recorded.append(mapper?.displayBounds.origin.y)
+                if mapper?.displayBounds.origin.y == 1_692 { exp.fulfill() }
+            },
+            isControllerIdle: { true },
+            cancelActiveInput: {},
+            interval: .milliseconds(20),
+            leeway: .milliseconds(5)
+        )
+        queue.async { coordinator.start() } // startup applies A + starts the timer
+        queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
+            currentEnum = enumB // provider-only change; only a timer tick can catch it
+        }
+        wait(for: [exp], timeout: 3.0)
+        queue.sync { coordinator.shutdown() } // barrier: cancels the timer, drains
+        let snapshot = queue.sync { recorded }
+        XCTAssertEqual(snapshot.first ?? nil, 1_080)
+        XCTAssertTrue(snapshot.contains(1_692))
+    }
+
+    /// Loss WHILE a gesture is active and a change is pending: cancellation is
+    /// synchronous (not deferred), the mapper is cleared, and the obsolete pending
+    /// is dropped so it can't be applied on the next idle.
+    func testLossDuringGestureCancelsSynchronouslyAndClearsPending() {
+        let c = makeCoordinator()
+        enumeration = .ok([edge(y: 1_080)]); idle = true; c.reconcile(reason: "startup")
+        idle = false
+        enumeration = .ok([edge(y: 1_692)]); c.reconcile(reason: "poll") // pending B, gesture active
+        enumeration = .ok([]); c.reconcile(reason: "poll")               // Edge lost mid-gesture
+        XCTAssertEqual(appliedYs, [1_080, nil]) // mapper cleared synchronously, not deferred
+        XCTAssertEqual(cancelCount, 1)          // input cancelled inline
+        c.commitOnIdle()                        // pending was cleared -> nothing applied
+        XCTAssertEqual(appliedYs, [1_080, nil])
     }
 
     /// Integration: a real GestureController proves in-flight touch events use the

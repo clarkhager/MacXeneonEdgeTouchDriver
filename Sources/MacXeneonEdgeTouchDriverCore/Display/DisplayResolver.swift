@@ -120,20 +120,16 @@ public final class DisplayResolver {
     }
 
     private static func enumerateActiveDisplays() -> DisplayEnumeration {
+        // `.failed` is returned SILENTLY: an automatic poll runs every ~2s and a
+        // transient enumeration failure must not log at all (PLAN §2). The
+        // coordinator leaves the mapping untouched on `.failed`.
         var displayCount: UInt32 = 0
-        let countResult = CGGetActiveDisplayList(0, nil, &displayCount)
-        guard countResult == .success else {
-            // Debug level: an automatic poll every ~2s must not spam the log on a
-            // transient enumeration failure. The coordinator leaves the mapping
-            // untouched on `.failed`.
-            DriverLoggers.log(.debug, category: .display, "CGGetActiveDisplayList count failed: \(countResult.rawValue)")
+        guard CGGetActiveDisplayList(0, nil, &displayCount) == .success else {
             return .failed
         }
 
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        let listResult = CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount)
-        guard listResult == .success else {
-            DriverLoggers.log(.debug, category: .display, "CGGetActiveDisplayList values failed: \(listResult.rawValue)")
+        guard CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount) == .success else {
             return .failed
         }
 
