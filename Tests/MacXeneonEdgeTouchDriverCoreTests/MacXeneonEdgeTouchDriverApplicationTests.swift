@@ -83,6 +83,44 @@ final class MacXeneonEdgeTouchDriverApplicationTests: XCTestCase {
         ])
     }
 
+    /// Exercises the REAL production teardown ordering (`teardownDisplayHandling`,
+    /// the exact block `stop()` runs): the coordinator must be shut down (pending
+    /// cleared) BEFORE `forceCancel()` fires `onBecameIdle`. With a display change
+    /// pending mid-gesture at teardown, a stale B must never be committed — a probe
+    /// tap right after teardown must still land on A. If the two calls were
+    /// reordered, the probe would land on B and this fails.
+    func testTeardownShutsCoordinatorBeforeForceCancelSoNoStaleCommit() {
+        var displays = [xeneonDisplay(y: 200)]
+        let resolver = DisplayResolver(activeDisplayProvider: { .ok(displays) })
+        let input = ApplicationRecordingInputSink()
+        let cursor = ApplicationRecordingCursorController()
+        let application = MacXeneonEdgeTouchDriverApplication(
+            configuration: immediateConfiguration(),
+            displayResolver: resolver,
+            inputSink: input,
+            cursorController: cursor
+        )
+        application.installDisplayIdleHook()
+        application.handleDeviceMatched() // apply A @ y=200
+
+        application.handleTouchEvent(touchEvent(.down, rawX: 0, rawY: 0)) // gesture active on A
+        displays = [xeneonDisplay(y: 800)]
+        application.handleDeviceMatched() // reconcile B mid-gesture -> pending B
+
+        application.teardownDisplayHandling() // shutdown() THEN forceCancel(): must not commit B
+
+        // Probe tap reveals the surviving mapper: still A.
+        application.handleTouchEvent(touchEvent(.down, rawX: 0, rawY: 0))
+        application.handleTouchEvent(touchEvent(.up, rawX: 0, rawY: 0))
+
+        XCTAssertEqual(input.calls, [
+            .mouseDown(CGPoint(x: 100, y: 200)), // gesture 1 down on A
+            .mouseUp(CGPoint(x: 100, y: 200)),   // teardown forceCancel cleanup up on A
+            .mouseDown(CGPoint(x: 100, y: 200)), // probe still on A (B never committed)
+            .mouseUp(CGPoint(x: 100, y: 200))
+        ])
+    }
+
     private func immediateConfiguration() -> DriverConfiguration {
         var configuration = DriverConfiguration.defaults
         configuration.timing.warpToClickDelayMs = 0

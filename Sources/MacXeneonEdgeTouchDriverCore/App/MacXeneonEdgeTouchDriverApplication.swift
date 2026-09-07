@@ -145,12 +145,7 @@ public final class MacXeneonEdgeTouchDriverApplication {
 
         hidMonitor.stop()
         gestureQueue.sync {
-            // Shut the coordinator down FIRST: sets isStopping, cancels the poll
-            // timer, and clears any pending mapping BEFORE forceCancel() (which
-            // synchronously fires onBecameIdle) so no mapping commits during teardown.
-            displayCoordinator.shutdown()
-            cancelStuckGestureTimer()
-            gestureController.forceCancel()
+            teardownDisplayHandling()
         }
         unregisterDisplayReconfigurationCallback()
         manualRefreshSource?.cancel()
@@ -197,6 +192,18 @@ public final class MacXeneonEdgeTouchDriverApplication {
             self?.cancelStuckGestureTimer()
             self?.displayCoordinator.commitOnIdle()
         }
+    }
+
+    /// Teardown ordering that MUST hold: shut the coordinator down (sets
+    /// `isStopping`, cancels the poll timer, clears `pending`) BEFORE
+    /// `forceCancel()` — which synchronously fires `onBecameIdle` -> `commitOnIdle`
+    /// — so a pending mapping can never be committed during teardown. Extracted
+    /// (not inlined in `stop()`) and `internal` so a test exercises this exact
+    /// ordering with a live gesture controller. Call on `gestureQueue`.
+    func teardownDisplayHandling() {
+        displayCoordinator.shutdown()
+        cancelStuckGestureTimer()
+        gestureController.forceCancel()
     }
 
     private func handleDeviceRemoval() {
