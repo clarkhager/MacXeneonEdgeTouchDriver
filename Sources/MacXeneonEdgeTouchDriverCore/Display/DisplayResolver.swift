@@ -38,6 +38,10 @@ public struct DisplaySnapshot: Equatable {
     /// Physical pixel height.
     public let pixelsHigh: Int
 
+    /// `CGDisplayRotation` in degrees (clockwise). Read at every resolve so a
+    /// rotation-only change is observed even when `bounds` is unchanged.
+    public let rotationDegrees: Double
+
     /// Creates a display snapshot for matching or tests.
     public init(
         displayID: CGDirectDisplayID,
@@ -46,7 +50,8 @@ public struct DisplaySnapshot: Equatable {
         serialNumber: UInt32,
         bounds: CGRect,
         pixelsWide: Int,
-        pixelsHigh: Int
+        pixelsHigh: Int,
+        rotationDegrees: Double = 0
     ) {
         self.displayID = displayID
         self.vendorNumber = vendorNumber
@@ -55,6 +60,7 @@ public struct DisplaySnapshot: Equatable {
         self.bounds = bounds
         self.pixelsWide = pixelsWide
         self.pixelsHigh = pixelsHigh
+        self.rotationDegrees = rotationDegrees
     }
 }
 
@@ -144,7 +150,8 @@ public final class DisplayResolver {
             serialNumber: CGDisplaySerialNumber(displayID),
             bounds: CGDisplayBounds(displayID),
             pixelsWide: CGDisplayPixelsWide(displayID),
-            pixelsHigh: CGDisplayPixelsHigh(displayID)
+            pixelsHigh: CGDisplayPixelsHigh(displayID),
+            rotationDegrees: CGDisplayRotation(displayID)
         )
     }
 }

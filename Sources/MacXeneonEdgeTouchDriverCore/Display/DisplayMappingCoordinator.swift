@@ -27,9 +27,11 @@ import Foundation
 /// `pending` before a `forceCancel()` (which synchronously fires the idle hook)
 /// genuinely makes that callback a no-op.
 public final class DisplayMappingCoordinator {
-    /// The resolved state of the Edge display.
+    /// The resolved state of the Edge display. `rotationDegrees` is the raw
+    /// `CGDisplayRotation` value, so a rotation-only change (same bounds) is a
+    /// distinct state and re-applies the mapping.
     public enum EdgeState: Equatable {
-        case present(bounds: CGRect, id: CGDirectDisplayID)
+        case present(bounds: CGRect, id: CGDirectDisplayID, rotationDegrees: Double)
         case absent
     }
 
@@ -138,7 +140,7 @@ public final class DisplayMappingCoordinator {
             return nil
         case .ok(let displays):
             if let match = resolver.resolve(from: displays) {
-                return .present(bounds: match.bounds, id: match.displayID)
+                return .present(bounds: match.bounds, id: match.displayID, rotationDegrees: match.rotationDegrees)
             }
             return .absent
         }
@@ -168,7 +170,7 @@ public final class DisplayMappingCoordinator {
             }
             handleLoss()
 
-        case .present(let bounds, _):
+        case .present(let bounds, _, let rotationDegrees):
             if observation == applied {
                 // Reverted to the currently-applied frame (e.g. B -> B -> A):
                 // drop any obsolete pending, no swap.
@@ -179,7 +181,16 @@ public final class DisplayMappingCoordinator {
                 return
             }
 
-            let mapper = CoordinateMapper(displayBounds: bounds)
+            let resolvedRotation = DisplayRotation.resolve(degrees: rotationDegrees)
+            if !resolvedRotation.isSupported {
+                // Logged only past churn suppression, i.e. once per change.
+                DriverLoggers.log(
+                    .warning,
+                    category: .display,
+                    "unsupported display rotation \(rotationDegrees) degrees; mapping as 0"
+                )
+            }
+            let mapper = CoordinateMapper(displayBounds: bounds, rotation: resolvedRotation.rotation)
             if manual {
                 pending = nil
                 cancelActiveInput() // clears any in-flight gesture; idle hook no-ops (pending nil)
@@ -218,11 +229,15 @@ public final class DisplayMappingCoordinator {
 
     private func originString(_ state: EdgeState) -> String {
         switch state {
-        case .present(let bounds, let id):
-            return "id=\(id) x=\(Int(bounds.origin.x)) y=\(Int(bounds.origin.y)) \(Int(bounds.width))x\(Int(bounds.height))"
+        case .present(let bounds, let id, let rotationDegrees):
+            return "id=\(id) x=\(Int(bounds.origin.x)) y=\(Int(bounds.origin.y)) \(Int(bounds.width))x\(Int(bounds.height)) rot=\(rotationString(rotationDegrees))"
         case .absent:
             return "absent"
         }
+    }
+
+    private func rotationString(_ degrees: Double) -> String {
+        degrees == degrees.rounded() && abs(degrees) < 100_000 ? String(Int(degrees)) : String(degrees)
     }
 
     private func log(_ message: String) {
