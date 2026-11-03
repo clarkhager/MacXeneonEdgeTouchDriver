@@ -10,6 +10,7 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
     // Test-controlled collaborators.
     private var enumeration: DisplayEnumeration = .ok([])
     private var appliedOrigins: [CGRect?] = []
+    private var appliedRotations: [DisplayRotation?] = []
     private var idle = true
     private var cancelCount = 0
 
@@ -18,7 +19,10 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
         return DisplayMappingCoordinator(
             resolver: resolver,
             queue: DispatchQueue(label: "test.coordinator"),
-            setMapper: { [unowned self] mapper in self.appliedOrigins.append(mapper?.displayBounds) },
+            setMapper: { [unowned self] mapper in
+                self.appliedOrigins.append(mapper?.displayBounds)
+                self.appliedRotations.append(mapper?.rotation)
+            },
             isControllerIdle: { [unowned self] in self.idle },
             cancelActiveInput: { [unowned self] in self.cancelCount += 1 }
         )
@@ -37,6 +41,106 @@ final class DisplayMappingCoordinatorTests: XCTestCase {
     }
 
     private var appliedYs: [CGFloat?] { appliedOrigins.map { $0?.origin.y } }
+
+    // MARK: - JAD-824 rotation
+
+    /// Live M1 2026-11-02 portrait Edge: rotation 90, bounds (3008, 354, 720, 2560).
+    private func rotatedEdge(
+        rotation: Double,
+        bounds: CGRect = CGRect(x: 3_008, y: 354, width: 720, height: 2_560),
+        id: CGDirectDisplayID = 3
+    ) -> DisplaySnapshot {
+        DisplaySnapshot(
+            displayID: id,
+            vendorNumber: CapturedXeneonDisplay.vendorNumber,
+            modelNumber: CapturedXeneonDisplay.modelNumber,
+            serialNumber: CapturedXeneonDisplay.observedSerialNumber,
+            bounds: bounds,
+            pixelsWide: Int(bounds.width),
+            pixelsHigh: Int(bounds.height),
+            rotationDegrees: rotation
+        )
+    }
+
+    func testStartupAppliesObservedRotation() {
+        enumeration = .ok([rotatedEdge(rotation: 90)])
+        let c = makeCoordinator()
+        c.reconcile(reason: "startup")
+        XCTAssertEqual(appliedRotations, [.degrees90])
+        XCTAssertEqual(appliedOrigins, [CGRect(x: 3_008, y: 354, width: 720, height: 2_560)])
+    }
+
+    /// A rotation change with UNCHANGED bounds must count as a change.
+    func testRotationOnlyChangeWithSameBoundsReapplies() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)]); c.reconcile(reason: "poll")
+        enumeration = .ok([rotatedEdge(rotation: 270)]); c.reconcile(reason: "poll")
+        XCTAssertEqual(appliedRotations, [.degrees90, .degrees270])
+        XCTAssertEqual(appliedOrigins.count, 2)
+        XCTAssertEqual(appliedOrigins[0], appliedOrigins[1]) // same bounds, still re-applied
+    }
+
+    func testSameRotationAndBoundsIsChurnSuppressed() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)])
+        c.reconcile(reason: "poll"); c.reconcile(reason: "poll"); c.reconcile(reason: "poll")
+        XCTAssertEqual(appliedRotations, [.degrees90])
+    }
+
+    func testRotationChangeMidGestureDefersUntilIdle() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)]); idle = true; c.reconcile(reason: "startup")
+        idle = false
+        enumeration = .ok([rotatedEdge(rotation: 270)]); c.reconcile(reason: "poll")
+        XCTAssertEqual(appliedRotations, [.degrees90]) // deferred
+        c.commitOnIdle()
+        XCTAssertEqual(appliedRotations, [.degrees90, .degrees270])
+    }
+
+    func testRotationRevertDuringGestureDropsPending() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)]); idle = true; c.reconcile(reason: "startup")
+        idle = false
+        enumeration = .ok([rotatedEdge(rotation: 270)]); c.reconcile(reason: "poll") // pending 270
+        enumeration = .ok([rotatedEdge(rotation: 90)]); c.reconcile(reason: "poll")  // back to applied
+        c.commitOnIdle()
+        XCTAssertEqual(appliedRotations, [.degrees90]) // obsolete 270 never applied
+    }
+
+    func testManualRefreshCommitsRotationOnlyChange() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)]); idle = true; c.reconcile(reason: "startup")
+        idle = false
+        enumeration = .ok([rotatedEdge(rotation: 270)]); c.reconcile(reason: "poll") // pending
+        c.manualRefresh()
+        XCTAssertEqual(appliedRotations, [.degrees90, .degrees270])
+        XCTAssertEqual(cancelCount, 1)
+        c.commitOnIdle() // no double commit
+        XCTAssertEqual(appliedRotations, [.degrees90, .degrees270])
+    }
+
+    func testManualRefreshSameRotationIsAlreadyCurrent() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 90)]); c.reconcile(reason: "startup")
+        c.manualRefresh()
+        XCTAssertEqual(appliedRotations, [.degrees90])
+        XCTAssertEqual(cancelCount, 0)
+    }
+
+    func testLandscapeToPortraitRotationAppliesBothBoundsAndRotation() {
+        let c = makeCoordinator()
+        let landscape = CGRect(x: 3_008, y: 1_000, width: 2_560, height: 720)
+        enumeration = .ok([rotatedEdge(rotation: 0, bounds: landscape)]); c.reconcile(reason: "poll")
+        enumeration = .ok([rotatedEdge(rotation: 90)]); c.reconcile(reason: "poll")
+        XCTAssertEqual(appliedRotations, [.degrees0, .degrees90])
+        XCTAssertEqual(appliedOrigins, [landscape, CGRect(x: 3_008, y: 354, width: 720, height: 2_560)])
+    }
+
+    func testUnsupportedRotationMapsAsZero() {
+        let c = makeCoordinator()
+        enumeration = .ok([rotatedEdge(rotation: 45)]); c.reconcile(reason: "startup")
+        XCTAssertEqual(appliedRotations, [.degrees0])
+    }
 
     func testReconcileWhileIdleAppliesImmediately() {
         enumeration = .ok([edge(y: 1_080)])
