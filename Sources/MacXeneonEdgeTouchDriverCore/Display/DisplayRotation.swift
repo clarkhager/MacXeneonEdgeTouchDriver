@@ -37,18 +37,20 @@ public enum DisplayRotation: Int, Equatable, CaseIterable {
 
     // MARK: - Panel-to-display convention
 
-    /// THE 90°/270° CONVENTION SWITCH. Flip this one line if the live 4-corner
-    /// tap test shows taps landing on the mirrored corner at 90°/270°.
+    /// THE 90°/270° CONVENTION SWITCH. Flip this one line if a live 4-corner
+    /// tap test shows taps landing on the diagonally opposite corner at 90°/270°.
     ///
-    /// `true` assumes `CGDisplayRotation` 90° means the framebuffer is rotated
-    /// 90° CLOCKWISE onto the panel (IOKit's convention). The HID digitizer is
-    /// fixed to the panel's native landscape axes: raw X runs along the long
-    /// (2560) edge left to right, raw Y along the short (720) edge top to
-    /// bottom, raw (0, 0) = native top-left (proven by the 0° mapping in use).
-    /// A clockwise turn puts the image's top edge on the panel's native right
-    /// edge and the image's left edge on the panel's native top edge, so the
-    /// image point under panel point (nx, ny) is (ny, 1 - nx).
-    static let quarterTurnIsClockwise = true
+    /// The HID digitizer is fixed to the panel's native landscape axes: raw X
+    /// runs along the long (2560) edge, raw Y along the short (720) edge, raw
+    /// (0, 0) = native top-left (proven by the 0° mapping in use).
+    ///
+    /// `false` (SETTLED LIVE, M1 2026-11-02, Edge at CGDisplayRotation 90°):
+    /// 90° maps panel (nx, ny) to display (u, v) = (1 - ny, nx). The first
+    /// build used `true` (the IOKit clockwise reading, (ny, 1 - nx)) and every
+    /// corner tap landed diagonally opposite: asked TL,TR,BL,BR landed at
+    /// Edge-local (634,2472), (80,2476), (630,123), (94,117) on 720x2560.
+    /// Flipping is exactly a 180° correction, so `false` is the observed one.
+    static let quarterTurnIsClockwise = false
 
     /// Maps a normalized panel-native point (nx, ny in 0...1, origin at the
     /// panel's native top-left) to a normalized point in the rotated display's

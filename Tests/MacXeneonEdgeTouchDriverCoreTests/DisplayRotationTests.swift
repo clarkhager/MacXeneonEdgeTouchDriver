@@ -71,15 +71,32 @@ final class DisplayRotationTests: XCTestCase {
         ])
     }
 
-    /// Pins the chosen 90-degree convention: (u, v) = (ny, 1 - nx).
+    /// Pins the LIVE-OBSERVED 90-degree convention (M1 2026-11-02 corner test):
+    /// (u, v) = (1 - ny, nx).
     func testCornersAt90() {
         let b = portraitBounds
         XCTAssertEqual(corners(CoordinateMapper(displayBounds: b, rotation: .degrees90)), [
-            CGPoint(x: b.minX, y: b.maxY), // native top-left     -> display bottom-left
-            CGPoint(x: b.minX, y: b.minY), // native top-right    -> display top-left
-            CGPoint(x: b.maxX, y: b.maxY), // native bottom-left  -> display bottom-right
-            CGPoint(x: b.maxX, y: b.minY), // native bottom-right -> display top-right
+            CGPoint(x: b.maxX, y: b.minY), // native top-left     -> display top-right
+            CGPoint(x: b.maxX, y: b.maxY), // native top-right    -> display bottom-right
+            CGPoint(x: b.minX, y: b.minY), // native bottom-left  -> display top-left
+            CGPoint(x: b.minX, y: b.maxY), // native bottom-right -> display bottom-left
         ])
+    }
+
+    /// The live receipts: under the first build's convention, (ny, 1 - nx),
+    /// every corner tap landed diagonally opposite. The settled convention must
+    /// be exactly that point turned 180 degrees about the display centre.
+    func testSettledNinetyIsFirstBuildTurned180() {
+        let mapper = CoordinateMapper(displayBounds: portraitBounds, rotation: .degrees90)
+        let b = portraitBounds
+        for (x, y) in [(0, 0), (maxX, 0), (0, maxY), (maxX, maxY), (3_000, 7_000), (12_345, 2_222)] {
+            let nx = CGFloat(x) / CGFloat(maxX)
+            let ny = CGFloat(y) / CGFloat(maxY)
+            let firstBuild = CGPoint(x: b.minX + ny * b.width, y: b.minY + (1 - nx) * b.height)
+            let p = mapper.map(rawX: x, rawY: y)
+            XCTAssertEqual(p.x, b.minX + b.maxX - firstBuild.x, accuracy: 1e-9, "raw (\(x), \(y))")
+            XCTAssertEqual(p.y, b.minY + b.maxY - firstBuild.y, accuracy: 1e-9, "raw (\(x), \(y))")
+        }
     }
 
     func testCornersAt180() {
@@ -90,26 +107,26 @@ final class DisplayRotationTests: XCTestCase {
         ])
     }
 
-    /// Pins the chosen 270-degree convention: (u, v) = (1 - ny, nx).
+    /// 270 is the inverse of the settled 90: (u, v) = (ny, 1 - nx).
     func testCornersAt270() {
         let b = portraitBounds
         XCTAssertEqual(corners(CoordinateMapper(displayBounds: b, rotation: .degrees270)), [
-            CGPoint(x: b.maxX, y: b.minY), // native top-left     -> display top-right
-            CGPoint(x: b.maxX, y: b.maxY), // native top-right    -> display bottom-right
-            CGPoint(x: b.minX, y: b.minY), // native bottom-left  -> display top-left
-            CGPoint(x: b.minX, y: b.maxY), // native bottom-right -> display bottom-left
+            CGPoint(x: b.minX, y: b.maxY), // native top-left     -> display bottom-left
+            CGPoint(x: b.minX, y: b.minY), // native top-right    -> display top-left
+            CGPoint(x: b.maxX, y: b.maxY), // native bottom-left  -> display bottom-right
+            CGPoint(x: b.maxX, y: b.minY), // native bottom-right -> display top-right
         ])
     }
 
     func testMidpointAt90SwapsAxes() {
         // Native centre stays the display centre; a native step right (along the
-        // long axis) moves UP the portrait display.
+        // long axis) moves DOWN the portrait display (settled convention).
         let mapper = CoordinateMapper(displayBounds: portraitBounds, rotation: .degrees90)
         let centre = mapper.map(rawX: 8_192, rawY: 4_800)
         XCTAssertEqual(centre.x, portraitBounds.midX, accuracy: 0.1)
         XCTAssertEqual(centre.y, portraitBounds.midY, accuracy: 0.2)
         let right = mapper.map(rawX: 12_000, rawY: 4_800)
-        XCTAssertLessThan(right.y, centre.y)
+        XCTAssertGreaterThan(right.y, centre.y)
         XCTAssertEqual(right.x, centre.x, accuracy: 0.1)
     }
 
