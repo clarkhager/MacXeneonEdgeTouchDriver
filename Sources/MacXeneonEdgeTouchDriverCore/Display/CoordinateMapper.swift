@@ -18,13 +18,19 @@ public struct CoordinateMapper: Equatable {
     /// Target display bounds in Quartz coordinates.
     public let displayBounds: CGRect
 
+    /// Display rotation. The touch digitizer is fixed to the panel's native
+    /// landscape axes, so a rotated display needs the normalized touch point
+    /// rotated into the display's own frame before scaling to `displayBounds`.
+    public let rotation: DisplayRotation
+
     /// Creates a mapper for a raw coordinate range and target display bounds.
     public init(
         rawMinX: Int = XeneonEdgeDevice.rawXRange.lowerBound,
         rawMaxX: Int = XeneonEdgeDevice.rawXRange.upperBound,
         rawMinY: Int = XeneonEdgeDevice.rawYRange.lowerBound,
         rawMaxY: Int = XeneonEdgeDevice.rawYRange.upperBound,
-        displayBounds: CGRect
+        displayBounds: CGRect,
+        rotation: DisplayRotation = .degrees0
     ) {
         precondition(rawMaxX > rawMinX, "rawMaxX must be greater than rawMinX")
         precondition(rawMaxY > rawMinY, "rawMaxY must be greater than rawMinY")
@@ -34,6 +40,7 @@ public struct CoordinateMapper: Equatable {
         self.rawMinY = rawMinY
         self.rawMaxY = rawMaxY
         self.displayBounds = displayBounds
+        self.rotation = rotation
     }
 
     /// Maps a raw touchscreen coordinate to the target display.
@@ -44,9 +51,13 @@ public struct CoordinateMapper: Equatable {
         let normalizedX = CGFloat(clampedX - rawMinX) / CGFloat(rawMaxX - rawMinX)
         let normalizedY = CGFloat(clampedY - rawMinY) / CGFloat(rawMaxY - rawMinY)
 
+        // Rotate BEFORE scaling: `displayBounds` is already in the rotated frame
+        // (e.g. 720x2560 at 90 degrees).
+        let unit = rotation.displayUnitPoint(nx: normalizedX, ny: normalizedY)
+
         return CGPoint(
-            x: displayBounds.origin.x + normalizedX * displayBounds.width,
-            y: displayBounds.origin.y + normalizedY * displayBounds.height
+            x: displayBounds.origin.x + unit.u * displayBounds.width,
+            y: displayBounds.origin.y + unit.v * displayBounds.height
         )
     }
 
